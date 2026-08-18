@@ -39,15 +39,17 @@
 
   /* --- cronómetro --- */
   .chrono-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .chrono-row #chrono{min-width:0}
   #chrono{
-    font-size:clamp(32px,11vw,64px);
-    font-weight:600;letter-spacing:.02em;line-height:1;
+    font-size:clamp(40px,14.5vw,96px);
+    font-weight:700;letter-spacing:-.01em;line-height:1;
   }
   #chrono.paused{color:var(--dim)}
-  .chrono-btns{display:flex;gap:8px}
+  #chrono.prep{color:var(--weak)}
+  .chrono-btns{display:flex;gap:6px;flex:0 0 auto}
   .sbtn{
     background:var(--btn);color:var(--fg);border:0;border-radius:14px;
-    width:58px;height:52px;font-size:22px;line-height:1;
+    width:46px;height:46px;font-size:19px;line-height:1;
     display:flex;align-items:center;justify-content:center;
   }
   .sbtn:active{background:#2c2c2e}
@@ -62,7 +64,8 @@
     font-size:min(46vw,34vh);
     font-weight:800;line-height:.86;letter-spacing:-.04em;
   }
-  #spm.stale{color:var(--dim)}
+  /* El marcador "--" a tamaño completo parece un fallo de render, no un hueco. */
+  #spm.stale{color:var(--dim);font-size:min(20vw,15vh)}
   #unit{font-size:clamp(18px,6vw,30px);font-weight:600;color:var(--dim);letter-spacing:.28em;margin-top:6px}
 
   /* --- calidad --- */
@@ -90,6 +93,16 @@
   #btnMain.on{background:var(--btn-on)}
   #btnMain:active{filter:brightness(1.3)}
 
+  #prep{display:flex;flex-direction:column;gap:6px}
+  #prep.hide{display:none}
+  .prep-label{font-size:12px;color:var(--dim);letter-spacing:.04em}
+  .prep-opts{display:flex;gap:6px}
+  .prep-opts button{
+    flex:1;background:var(--btn);color:var(--dim);border:0;border-radius:12px;
+    padding:12px 0;font-size:15px;font-weight:600;
+  }
+  .prep-opts button.sel{background:#2c2c2e;color:var(--fg)}
+
   #diag{font-size:12px;color:#5a5a5a;text-align:center;min-height:15px}
   #warn{
     font-size:13px;line-height:1.35;color:#000;background:var(--weak);
@@ -106,6 +119,16 @@
       <button class="sbtn" id="btnChrono" aria-label="Arrancar o pausar cronómetro">&#9654;</button>
       <button class="sbtn" id="btnReset" aria-label="Resetear cronómetro">&#8635;</button>
       <button class="sbtn" id="btnVoice" aria-label="Activar o silenciar la voz">&#128266;</button>
+    </div>
+  </div>
+
+  <div id="prep">
+    <div class="prep-label">Cuenta atrás antes de empezar</div>
+    <div class="prep-opts">
+      <button data-s="0">Directo</button>
+      <button data-s="30">30 s</button>
+      <button data-s="60">1 min</button>
+      <button data-s="120">2 min</button>
     </div>
   </div>
 
@@ -152,8 +175,12 @@ const UPDATE_MS   = 250;         // cada cuánto se recalcula
 const MEDIAN_N    = 5;           // estimaciones para la mediana mostrada
 const RECHECK_MS  = 5000;        // reevaluación del eje
 const RECHECK_GAIN= 1.6;         // histéresis: cuánto debe ganar el eje rival
-const CONC_MIN    = 0.55;        // concentración espectral mínima para dar número
-const CONC_GOOD   = 0.75;        // a partir de aquí, "señal buena"
+/* Umbrales de concentración espectral, medidos en simulación con el
+   denominador honesto (ver dominantFreq): palada real con oleaje muy fuerte se
+   queda en 40–49 %, con oleaje medio en ~72 %, y a la deriva sin palar cae a
+   0 %. El hueco es enorme, así que el mínimo va holgado. */
+const CONC_MIN    = 0.30;        // por debajo: "--" en vez de un número inventado
+const CONC_GOOD   = 0.65;        // a partir de aquí, "señal buena"
 const TILT_VEST   = 35;          // grados desde la vertical para considerar chaleco
 const SPEAK_MS    = 30000;       // cada cuánto se canta la cadencia en voz alta
 /* Segunda red contra la cadencia fantasma: por debajo de este movimiento no
@@ -175,8 +202,10 @@ const RMS_MIN     = { giro: 2.5, acel: 0.25 };
    que distingue físicamente ambos montajes. La línea de diagnóstico muestra el
    modo elegido y se puede tocar para forzar el otro si en el agua no cuadra. */
 const MODES = {
-  vest: { label: "chaleco", fMin: 0.45, fMax: 1.60, step: 0.01, mult: 2, chain: 1 },
-  deck: { label: "cubierta", fMin: 0.60, fMax: 3.20, step: 0.02, mult: 1, chain: 0 }
+  // fLow < fMin a propósito: el barrido baja hasta el oleaje aunque el pico solo
+  // se busque a partir de fMin. Ver dominantFreq().
+  vest: { label: "chaleco", fLow: 0.15, fMin: 0.45, fMax: 1.60, step: 0.01, mult: 2, chain: 1 },
+  deck: { label: "cubierta", fLow: 0.15, fMin: 0.60, fMax: 3.20, step: 0.02, mult: 1, chain: 0 }
 };
 
 /* ---------------- DOM ---------------- */
@@ -190,6 +219,7 @@ const btnMain  = document.getElementById("btnMain");
 const btnChrono= document.getElementById("btnChrono");
 const btnReset = document.getElementById("btnReset");
 const btnVoice = document.getElementById("btnVoice");
+const elPrep   = document.getElementById("prep");
 
 /* ---------------- biquad (RBJ cookbook) ---------------- */
 function makeBiquad(b0, b1, b2, a1, a2) {
@@ -244,16 +274,21 @@ let voiceOn = true;            // la voz es el único canal si el móvil va en e
 let voice = null;              // voz en español, si el sistema tiene alguna
 let lastSpoke = 0;
 let spokeOk = false;           // si el navegador llegó a aceptar alguna locución
+let prepSec = 60;              // margen para guardar el móvil y arrancar a palar
+let prepping = false;
+let prepEnd = 0;
+let prepMark = -1;             // último segundo ya cantado de la cuenta atrás
 
 /* remuestreador */
 let lastT = null, lastV = [0, 0, 0], nextT = 0;
 
-function resetDsp() {
+function resetDsp(keepGrav) {
   filters = BANDS.map(b => AXES.map(() => [highpass(b[0], FS, Q), lowpass(b[1], FS, Q)]));
   buf = BANDS.map(() => AXES.map(() => new Float32Array(BUF_N)));
   bufPos = 0; bufFilled = 0;
   axis = -1; lastRecheck = 0; recentSpm = [];
-  lastT = null; nextT = 0; fsRaw = 0; grav = null;
+  lastT = null; nextT = 0; fsRaw = 0;
+  if (!keepGrav) grav = null;
   if (!modeForced) mode = null;
 }
 
@@ -330,23 +365,30 @@ function goertzel(a, n, f) {
 }
 
 // Frecuencia dominante por barrido + interpolación parabólica.
-// conc = fracción de la potencia de banda concentrada alrededor del pico.
+// conc = fracción de la potencia concentrada alrededor del pico.
+//
+// El barrido empieza en fLow, por debajo de donde se busca el pico (fMin). Si
+// solo se mide dentro de la banda de búsqueda, un pico de ruido parece
+// limpísimo cuando la energía de verdad está por debajo: a la deriva, con el
+// oleaje a 0,25 Hz fuera de la banda, llegaba a cantar cadencias de 143 spm
+// con "pico 59%". Metiendo el oleaje en el denominador, la cuenta sale sola.
 function dominantFreq(a, n, m) {
-  const bins = Math.round((m.fMax - m.fMin) / m.step) + 1;
+  const bins = Math.round((m.fMax - m.fLow) / m.step) + 1;
+  const iMin = Math.round((m.fMin - m.fLow) / m.step);
   const p = new Float64Array(bins);
-  let total = 0, best = 0, bi = 0;
+  let total = 0, best = 0, bi = iMin;
   for (let i = 0; i < bins; i++) {
-    const v = goertzel(a, n, m.fMin + i * m.step);
+    const v = goertzel(a, n, m.fLow + i * m.step);
     p[i] = v; total += v;
-    if (v > best) { best = v; bi = i; }
+    if (i >= iMin && v > best) { best = v; bi = i; }
   }
   if (total <= 0 || best <= 0) return { f: 0, conc: 0 };
 
-  // Si f/2 sigue dentro de la banda y es más fuerte, el pico era un armónico.
-  const hi = Math.round((((m.fMin + bi * m.step) / 2) - m.fMin) / m.step);
-  if (hi >= 1 && hi < bins && p[hi] > best) { bi = hi; best = p[hi]; }
+  // Si f/2 sigue dentro de la banda buscada y es más fuerte, el pico era un armónico.
+  const hi = Math.round((((m.fLow + bi * m.step) / 2) - m.fLow) / m.step);
+  if (hi >= iMin && hi < bins && p[hi] > best) { bi = hi; best = p[hi]; }
 
-  let f = m.fMin + bi * m.step;
+  let f = m.fLow + bi * m.step;
   if (bi > 0 && bi < bins - 1) {
     const d = p[bi - 1] - 2 * p[bi] + p[bi + 1];
     if (d !== 0) {
@@ -419,8 +461,24 @@ function setQuality(cls, text) {
   elQText.textContent = text;
 }
 
+// Cuenta atrás: cantada en los hitos que importan, no segundo a segundo.
+function tickPrep() {
+  const left = Math.max(0, prepEnd - performance.now());
+  const secs = Math.ceil(left / 1000);
+  setQuality("weak", "Empezamos en " + secs + " s");
+  elDiag.textContent = diagText();
+
+  if (secs !== prepMark) {
+    prepMark = secs;
+    if (secs === 30 || secs === 10) say(secs + " segundos", 120);
+    else if (secs >= 1 && secs <= 3) say(String(secs), 100);
+  }
+  if (left <= 0) { say("ya", 400); beginSession(); }
+}
+
 function tick() {
   updateChrono();
+  if (prepping) { tickPrep(); return; }
   if (!running) return;
 
   const elapsed = performance.now() - startedAt;
@@ -477,7 +535,8 @@ function tick() {
     elDiag.textContent = diagText(conc);
     if (elapsed - lastSpoke >= SPEAK_MS) {
       lastSpoke = elapsed;
-      say("sin señal", [90, 90, 90]);   // en el chaleco, un silencio parece una avería
+      // en el chaleco, un silencio es indistinguible de una avería
+      say(timeWords(chronoMs()) + ", sin señal", [90, 90, 90]);
     }
     return;
   }
@@ -495,7 +554,7 @@ function tick() {
 
   if (elapsed - lastSpoke >= SPEAK_MS) {
     lastSpoke = elapsed;
-    say(String(Math.round(shown)), 160);
+    say(timeWords(chronoMs()) + ", " + Math.round(shown) + " paladas", 160);
   }
 
   if (conc >= CONC_GOOD && agree < 0.15 && spread < 6 && fsRaw >= 25) {
@@ -592,10 +651,33 @@ function setVoice(on) {
   btnVoice.classList.toggle("off", !on);
   if (!on && hasSpeech) { try { speechSynthesis.cancel(); } catch (e) {} }
 }
+function setPrep(sec) {
+  prepSec = sec;
+  const bs = elPrep.querySelectorAll(".prep-opts button");
+  for (let i = 0; i < bs.length; i++) {
+    bs[i].classList.toggle("sel", Number(bs[i].getAttribute("data-s")) === sec);
+  }
+  try { localStorage.setItem("prepSec", String(sec)); } catch (e) {}
+}
+elPrep.addEventListener("click", (e) => {
+  const b = e.target.closest ? e.target.closest("button[data-s]") : null;
+  if (b) setPrep(Number(b.getAttribute("data-s")));
+});
+
 btnVoice.addEventListener("click", () => {
   setVoice(!voiceOn);
   if (voiceOn) say("voz activada", 160);
 });
+
+// "1 minuto 30" lo lee bien un TTS español; "0 minutos 30" no.
+function timeWords(ms) {
+  const total = Math.floor(ms / 1000);
+  const m = Math.floor(total / 60), sec = total % 60;
+  if (m === 0) return sec + " segundos";
+  let out = (m === 1 ? "1 minuto" : m + " minutos");
+  if (sec) out += " " + sec;
+  return out;
+}
 
 /* ---------------- cronómetro ---------------- */
 let chronoRunning = false, chronoBase = 0, chronoAcc = 0;
@@ -604,11 +686,15 @@ function chronoMs() {
   return chronoAcc + (chronoRunning ? performance.now() - chronoBase : 0);
 }
 function updateChrono() {
-  const total = Math.floor(chronoMs() / 1000);
+  // Durante la cuenta atrás el crono es la cuenta atrás: un solo sitio donde mirar.
+  const total = prepping
+    ? Math.ceil(Math.max(0, prepEnd - performance.now()) / 1000)
+    : Math.floor(chronoMs() / 1000);
   const mm = String(Math.floor(total / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
   elChrono.textContent = mm + ":" + ss;
-  elChrono.classList.toggle("paused", !chronoRunning);
+  elChrono.classList.toggle("prep", prepping);
+  elChrono.classList.toggle("paused", !prepping && !chronoRunning);
   btnChrono.innerHTML = chronoRunning ? "&#10073;&#10073;" : "&#9654;";
 }
 function chronoStart() {
@@ -668,41 +754,65 @@ async function start() {
   // primera locución sale de forma síncrona dentro del gesto que la disparó.
   // Con un await por medio queda muda toda la sesión.
   lastSpoke = 0;
-  say("listo");
+  say(prepSec > 0 ? ("empezamos en " + timeWords(prepSec * 1000)) : "listo", 160);
 
   if (!(await requestSensorPermission())) { showWarn("Permiso de sensores denegado."); return; }
 
   hideWarn();
   resetDsp();
-  running = true;
-  startedAt = performance.now();
+  // El sensor escucha ya durante la cuenta atrás: así el vector gravedad llega
+  // asentado al arranque y la detección de montaje acierta desde el primer ciclo.
   window.addEventListener("devicemotion", onMotion);
   acquireWakeLock();
 
   btnMain.textContent = "PARAR";
   btnMain.classList.add("on");
+  elPrep.classList.add("hide");
   elSpm.textContent = "--";
   elSpm.classList.add("stale");
-  setQuality("weak", "Calibrando… " + (CALIB_MS / 1000) + " s");
 
-  if (chronoMs() === 0) chronoStart();
+  if (prepSec > 0) {
+    prepping = true;
+    prepEnd = performance.now() + prepSec * 1000;
+    prepMark = -1;
+    setQuality("weak", "Preparados…");
+  } else {
+    beginSession();
+  }
 
   setTimeout(() => {
-    if (running && bufFilled === 0) {
+    if ((running || prepping) && bufFilled === 0) {
       showWarn("No llegan datos del sensor. Comprueba que el móvil tiene giroscopio " +
                "y que la página se sirve por https:// o localhost.");
     }
   }, 3000);
 }
 
+// Arranque real de la sesión: al acabar la cuenta atrás, o directo si no la hay.
+function beginSession() {
+  prepping = false;
+  resetDsp(true);            // buffers limpios, pero la gravedad ya medida vale
+  running = true;
+  startedAt = performance.now();
+  lastSpoke = 0;
+  chronoRunning = false; chronoAcc = 0; chronoBase = 0;
+  chronoStart();
+  elChrono.classList.remove("prep");
+  setQuality("weak", "Calibrando… " + (CALIB_MS / 1000) + " s");
+}
+
 function stop() {
+  const eraPrep = prepping;
   running = false;
-  say("parado");
+  prepping = false;
+  say(eraPrep ? "cancelado" : "parado");
   window.removeEventListener("devicemotion", onMotion);
   releaseWakeLock();
   chronoPause();
   btnMain.textContent = "INICIAR";
   btnMain.classList.remove("on");
+  elPrep.classList.remove("hide");
+  elChrono.classList.remove("prep");
   elSpm.classList.add("stale");
   setQuality("bad", "Detección parada");
   elDiag.textContent = "";
@@ -720,6 +830,9 @@ if (!window.isSecureContext) {
 }
 updateChrono();
 setVoice(true);
+let prepGuardado = null;
+try { prepGuardado = localStorage.getItem("prepSec"); } catch (e) {}
+setPrep(prepGuardado === null ? 60 : Number(prepGuardado));
 setInterval(tick, UPDATE_MS);
 </script>
 </body>

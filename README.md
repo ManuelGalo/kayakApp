@@ -45,23 +45,34 @@ en el móvil sí es contexto seguro. Sirve con `python3 serve.py`.
 
 ## Uso
 
-1. Coloca el móvil (chaleco en vertical, o soporte de cubierta).
-2. **INICIAR**. El cronómetro arranca solo si estaba a cero.
-3. Los primeros ~8 s calibra montaje y eje; después ~12 s más para llenar la
-   ventana de análisis. A partir de ahí el número es continuo.
+1. Coloca el móvil (chaleco en vertical, o soporte de cubierta) y elige la
+   **cuenta atrás**: Directo / 30 s / 1 min / 2 min. Es el margen para guardar
+   el móvil y arrancar a palar. La elección se recuerda entre sesiones.
+2. **INICIAR**. Dice en voz alta cuánto falta y canta los hitos: 30 s, 10 s,
+   3, 2, 1, **ya**. El cronómetro muestra la cuenta atrás en ámbar; PARAR la
+   cancela.
+3. Al llegar a cero arranca la sesión y el cronómetro se pone a cero. Los
+   primeros ~8 s calibra montaje y eje; después ~12 s más para llenar la
+   ventana. El primer aviso de cadencia llega a los 30 s.
 4. Pala. El número grande es la cadencia media de los últimos 12 s.
 
-El cronómetro tiene sus propios botones (▶/⏸ y ↺) e ignora la detección.
+El cronómetro tiene sus propios botones (▶/⏸ y ↺) para usarlo aparte.
 
 ### Voz: la cadencia cantada cada 30 s
 
 Con el móvil en el bolsillo del chaleco no se ve la pantalla, así que **la voz
-es el único canal durante la sesión**. Cada 30 segundos dice la cadencia
-("ochenta y ocho"). Además:
+es el único canal durante la sesión**. Cada 30 segundos dice el tiempo y la
+cadencia:
 
-- Al pulsar INICIAR dice **"listo"** — confirma el arranque sin mirar, y de
-  paso desbloquea el audio (Android exige un gesto del usuario para poder
-  hablar después).
+> *"treinta segundos, ochenta y ocho paladas"*
+> *"un minuto, noventa paladas"*
+> *"un minuto treinta, ochenta y nueve paladas"*
+
+Además:
+
+- Al pulsar INICIAR habla de inmediato (la cuenta atrás, o **"listo"** si vas
+  directo). Confirma el arranque sin mirar y, sobre todo, desbloquea el audio:
+  Android solo lo permite dentro del gesto del usuario.
 - Si pierde la señal dice **"sin señal"** en vez de callarse: dentro del
   chaleco, un silencio es indistinguible de una avería.
 - **Vibra** a la vez que habla (una pulsación con la cadencia, tres cortas al
@@ -106,7 +117,7 @@ DeviceMotionEvent.rotationRate
        b) frecuencia por cruces por cero (control cruzado → calidad)
   → spm = f × 60 × (2 si la dominante es el ciclo izquierda+derecha)
   → mediana de las 5 últimas estimaciones
-  → voz cada 30 s (Web Speech API, es-ES)
+  → voz cada 30 s: tiempo + cadencia (Web Speech API, es-ES)
 ```
 
 **Rango medible:** 40–180 spm en cubierta, **55–180 spm en chaleco**. El límite
@@ -116,6 +127,14 @@ oleaje. Y en agua tranquila el oleaje es una sinusoide tan limpia que se cuela
 como cadencia perfectamente creíble — la primera versión llegó a cantar "42"
 veinte segundos después de dejar de palar. Antes que dar un número inventado,
 el prototipo dice `--`.
+
+La misma trampa tenía una segunda cara. El indicador de calidad medía la
+concentración del pico **solo dentro de la banda de búsqueda**, así que cuando
+la energía de verdad estaba por debajo (el oleaje), un pico de ruido parecía
+limpísimo: a la deriva cantaba 143 spm con "pico 59 %". Ahora el barrido baja
+hasta 0,15 Hz para el denominador aunque el pico solo se busque a partir de
+`fMin`. Con eso, palar con oleaje muy fuerte da 40–52 % y estar a la deriva da
+0–8 %: el hueco es tan grande que el umbral no es una elección delicada.
 
 Sin GPS, sin Bluetooth, sin login, sin base de datos, sin grabación, sin
 gráficas, sin navegación.
@@ -159,8 +178,9 @@ node test/voz.js          # voz: temporizado, contenido, vibración y gesto
 `simulacion.js` cubre 50–140 spm en ambos montajes, los tres ejes, sensor lento
 (25 Hz), oleaje fuerte, barco a la deriva con oleaje limpio (debe dar `--`),
 cadencia fuera de rango y cambios de ritmo a mitad de sesión. `voz.js`
-comprueba que canta a los 30, 60 y 90 s, que el número es el correcto, que
-avisa al perder la señal, y las dos trampas que dejan la sesión muda en
+comprueba los hitos de la cuenta atrás, que canta a los 30, 60 y 90 s con el
+tiempo bien formado ("1 minuto 30", no "0 minutos 90"), que el número es el
+correcto, que avisa al perder la señal, y las dos trampas que dejan la sesión muda en
 Android: que la primera locución salga **dentro del gesto** del usuario (con un
 `await` por medio, Chrome la descarta y ya no habla en toda la sesión) y que
 siga hablando en un móvil sin voz española instalada.

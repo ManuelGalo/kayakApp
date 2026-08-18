@@ -1,10 +1,16 @@
 const fs=require('fs'), vm=require('vm');
 const code = fs.readFileSync('/home/user/kayakApp/index.html','utf8').match(/<script>\n([\s\S]*?)<\/script>/)[1];
 function mk(){return{textContent:'',innerHTML:'',className:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){}};}
+function mkPrep(){
+  const btns=[0,30,60,120].map(v=>({getAttribute:()=>String(v),classList:{toggle(){}}}));
+  const el=mk(); el.querySelectorAll=()=>btns; return el;
+}
+const localStorage={getItem:()=>null,setItem(){}};
 const els={}; for(const id of ['spm','chrono','quality','qtext','diag','warn','btnMain','btnChrono','btnReset','btnVoice']) els[id]=mk();
+els['prep']=mkPrep();
 let now=0; const L={};
 const sb={console,performance:{now:()=>now},document:{getElementById:i=>els[i],addEventListener(){},visibilityState:'visible'},
-  navigator:{},setInterval:()=>0,setTimeout:()=>0,Math,String,Number,Array,Float32Array,Float64Array,Object,JSON,Error,Promise};
+  navigator:{},localStorage,setInterval:()=>0,setTimeout:()=>0,Math,String,Number,Array,Float32Array,Float64Array,Object,JSON,Error,Promise};
 sb.window=sb; sb.window.DeviceMotionEvent=function(){}; sb.window.isSecureContext=true;
 sb.window.addEventListener=(n,f)=>{L[n]=f;}; sb.window.removeEventListener=n=>{delete L[n];};
 vm.createContext(sb); vm.runInContext(code, sb);
@@ -14,7 +20,7 @@ const GRAV = { chaleco:[0.4,-9.7,0.6], cubierta:[0.3,-6.9,-6.9] };  // vertical 
 
 let fails=0;
 async function run({label, mount, spm, axisIdx, seconds=40, hz=60, noise=8, drift=25, gen, expect}){
-  now=0; R('start()'); await new Promise(r=>setImmediate(r));
+  now=0; R('setPrep(0)'); R('start()'); await new Promise(r=>setImmediate(r));
   const g = GRAV[mount], dtNom=1000/hz; let nextTick=250;
   // chaleco: la dominante es el ciclo (spm/120). cubierta: es la palada (spm/60).
   const f0 = (mount==='chaleco' ? spm/120 : spm/60);
