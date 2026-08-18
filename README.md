@@ -64,7 +64,15 @@ es el único canal durante la sesión**. Cada 30 segundos dice la cadencia
   hablar después).
 - Si pierde la señal dice **"sin señal"** en vez de callarse: dentro del
   chaleco, un silencio es indistinguible de una avería.
+- **Vibra** a la vez que habla (una pulsación con la cadencia, tres cortas al
+  perder la señal). Se nota a través del chaleco, y si vibra pero no se oye ya
+  sabes que el problema es el audio y no la detección.
 - El botón 🔊 la silencia.
+
+Si no se oye nada, la línea gris de diagnóstico lo dice: `voz off` (silenciada),
+`voz NO SOPORTADA` (navegador sin Web Speech API), `voz sin voces` (el motor TTS
+del móvil no tiene ninguna instalada) o `voz N sin sonar` (el navegador rechazó
+la locución). Con `voz es` o `voz sistema` el problema es de volumen.
 
 Se oye por el altavoz desde el bolsillo en agua tranquila, pero con viento un
 auricular (uno solo, por seguridad) va mucho mejor. Sube el volumen de
@@ -145,14 +153,17 @@ para los dos montajes:
 
 ```bash
 node test/simulacion.js   # 26 casos: cadencia, montajes, ejes y falsos positivos
-node test/voz.js          # temporizado y contenido de las locuciones
+node test/voz.js          # voz: temporizado, contenido, vibración y gesto
 ```
 
 `simulacion.js` cubre 50–140 spm en ambos montajes, los tres ejes, sensor lento
 (25 Hz), oleaje fuerte, barco a la deriva con oleaje limpio (debe dar `--`),
 cadencia fuera de rango y cambios de ritmo a mitad de sesión. `voz.js`
-comprueba que canta a los 30, 60 y 90 s, que el número es el correcto y que
-avisa al perder la señal.
+comprueba que canta a los 30, 60 y 90 s, que el número es el correcto, que
+avisa al perder la señal, y las dos trampas que dejan la sesión muda en
+Android: que la primera locución salga **dentro del gesto** del usuario (con un
+`await` por medio, Chrome la descarta y ya no habla en toda la sesión) y que
+siga hablando en un móvil sin voz española instalada.
 
 No sustituyen a la prueba en el agua: validan el algoritmo, no la física real
 de la palada.
