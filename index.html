@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Cadencia de palada</title>
+<style>
+  :root{
+    --bg:#000;
+    --fg:#fff;
+    --dim:#8a8a8a;
+    --good:#31d158;
+    --weak:#ffb020;
+    --bad:#ff3b30;
+    --btn:#1c1c1e;
+    --btn-on:#8e1b16;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+    font-variant-numeric:tabular-nums;
+    -webkit-user-select:none;user-select:none;
+    overflow:hidden;
+    touch-action:manipulation;
+  }
+  #app{
+    height:100%;
+    display:flex;flex-direction:column;
+    padding:calc(env(safe-area-inset-top) + 10px) 14px calc(env(safe-area-inset-bottom) + 14px);
+    gap:8px;
+  }
+
+  /* --- cronómetro --- */
+  .chrono-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  #chrono{
+    font-size:clamp(38px,13vw,72px);
+    font-weight:600;letter-spacing:.02em;line-height:1;
+  }
+  #chrono.paused{color:var(--dim)}
+  .chrono-btns{display:flex;gap:8px}
+  .sbtn{
+    background:var(--btn);color:var(--fg);border:0;border-radius:14px;
+    width:64px;height:52px;font-size:22px;line-height:1;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .sbtn:active{background:#2c2c2e}
+
+  /* --- cadencia --- */
+  .main{
+    flex:1;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:0;min-height:0;
+  }
+  #spm{
+    font-size:min(46vw,34vh);
+    font-weight:800;line-height:.86;letter-spacing:-.04em;
+  }
+  #spm.stale{color:var(--dim)}
+  #unit{font-size:clamp(18px,6vw,30px);font-weight:600;color:var(--dim);letter-spacing:.28em;margin-top:6px}
+
+  /* --- calidad --- */
+  #quality{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    font-size:clamp(15px,4.6vw,22px);font-weight:600;
+    padding:10px 14px;border-radius:14px;background:#111;
+    min-height:52px;text-align:center;
+  }
+  #dot{width:16px;height:16px;border-radius:50%;background:var(--dim);flex:0 0 auto}
+  #quality.good #dot{background:var(--good)}
+  #quality.weak #dot{background:var(--weak)}
+  #quality.bad  #dot{background:var(--bad)}
+  #quality.good{color:var(--good)}
+  #quality.weak{color:var(--weak)}
+  #quality.bad{color:var(--bad)}
+
+  /* --- botón principal --- */
+  #btnMain{
+    width:100%;border:0;border-radius:20px;
+    background:var(--btn);color:var(--fg);
+    font-size:clamp(22px,7vw,32px);font-weight:700;letter-spacing:.06em;
+    padding:24px 0;
+  }
+  #btnMain.on{background:var(--btn-on)}
+  #btnMain:active{filter:brightness(1.3)}
+
+  #diag{font-size:12px;color:#5a5a5a;text-align:center;min-height:15px}
+  #warn{
+    font-size:13px;line-height:1.35;color:#000;background:var(--weak);
+    border-radius:12px;padding:10px 12px;display:none;
+  }
+  #warn.show{display:block}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="chrono-row">
+    <div id="chrono" class="paused">00:00</div>
+    <div class="chrono-btns">
+      <button class="sbtn" id="btnChrono" aria-label="Arrancar o pausar cronómetro">&#9654;</button>
+      <button class="sbtn" id="btnReset" aria-label="Resetear cronómetro">&#8635;</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div id="spm" class="stale">--</div>
+    <div id="unit">SPM</div>
+  </div>
+
+  <div id="quality" class="bad"><span id="dot"></span><span id="qtext">Detección parada</span></div>
+  <div id="diag"></div>
+  <div id="warn"></div>
+  <button id="btnMain">INICIAR</button>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------
+   Prototipo de cadencia de palada — HTML + JS puro, sin dependencias.
+
+   Cadena de proceso:
+     giroscopio (DeviceMotionEvent.rotationRate)
+       -> remuestreo uniforme a 50 Hz (interpolación lineal)
+       -> dos bancos de filtros por eje (biquads Butterworth de orden 2):
+            banda PALADA 0,8–3,0 Hz   (montaje en cubierta)
+            banda CICLO  0,3–2,0 Hz   (montaje en chaleco)
+       -> selección automática del eje con más energía en banda
+       -> ventana deslizante de 12 s:
+            a) frecuencia dominante por barrido Goertzel
+            b) frecuencia por cruces por cero (control cruzado)
+       -> spm = f * 60 * (2 si la dominante es el ciclo izq+der)
+       -> mediana de las últimas estimaciones
+   ------------------------------------------------------------------ */
+
+/* ---------------- parámetros ---------------- */
+const FS          = 50;          // Hz del remuestreo interno
+const DT          = 1000 / FS;   // ms entre muestras remuestreadas
+const CALIB_MS    = 8000;        // ventana de calibración (eje + montaje)
+const WIN_S       = 12;          // ventana de análisis (s)
+const WIN_N       = WIN_S * FS;  // muestras por ventana
+const BUF_N       = 20 * FS;     // buffer circular (20 s)
+const SPM_MIN     = 40;          // rango plausible mostrado
+const SPM_MAX     = 180;
+const UPDATE_MS   = 250;         // cada cuánto se recalcula
+const MEDIAN_N    = 5;           // estimaciones para la mediana mostrada
+const RECHECK_MS  = 5000;        // reevaluación del eje
+const RECHECK_GAIN= 1.6;         // histéresis: cuánto debe ganar el eje rival
+const CONC_MIN    = 0.55;        // concentración espectral mínima para dar número
+const CONC_GOOD   = 0.75;        // a partir de aquí, "señal buena"
+const TILT_VEST   = 35;          // grados desde la vertical para considerar chaleco
+
+/* Los dos montajes que describen las especificaciones producen la MISMA forma
+   de onda con distinto significado, así que no se pueden separar mirando solo
+   la señal:
+
+     - Chaleco (móvil vertical): el giroscopio ve la rotación del tronco. El
+       ciclo izquierda+derecha es UNA oscilación, así que la frecuencia
+       dominante es la MITAD del ritmo de palada -> hay que multiplicar por 2.
+     - Cubierta (móvil inclinado ~45°): hay un impulso del barco por cada
+       palada, así que la dominante YA es el ritmo de palada -> por 1.
+
+   Se resuelve por la orientación del móvil (vector gravedad), que es lo único
+   que distingue físicamente ambos montajes. La línea de diagnóstico muestra el
+   modo elegido y se puede tocar para forzar el otro si en el agua no cuadra. */
+const MODES = {
+  vest: { label: "chaleco", fMin: 0.35, fMax: 1.60, step: 0.01, mult: 2, chain: 1 },
+  deck: { label: "cubierta", fMin: 0.60, fMax: 3.20, step: 0.02, mult: 1, chain: 0 }
+};
+
+/* ---------------- DOM ---------------- */
+const elSpm    = document.getElementById("spm");
+const elChrono = document.getElementById("chrono");
+const elQual   = document.getElementById("quality");
+const elQText  = document.getElementById("qtext");
+const elDiag   = document.getElementById("diag");
+const elWarn   = document.getElementById("warn");
+const btnMain  = document.getElementById("btnMain");
+const btnChrono= document.getElementById("btnChrono");
+const btnReset = document.getElementById("btnReset");
+
+/* ---------------- biquad (RBJ cookbook) ---------------- */
+function makeBiquad(b0, b1, b2, a1, a2) {
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  return function step(x) {
+    const y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1; x1 = x; y2 = y1; y1 = y;
+    return y;
+  };
+}
+function highpass(fc, fs, q) {
+  const w = 2 * Math.PI * fc / fs, cs = Math.cos(w), sn = Math.sin(w);
+  const al = sn / (2 * q), a0 = 1 + al;
+  return makeBiquad((1 + cs) / 2 / a0, -(1 + cs) / a0, (1 + cs) / 2 / a0,
+                    (-2 * cs) / a0, (1 - al) / a0);
+}
+function lowpass(fc, fs, q) {
+  const w = 2 * Math.PI * fc / fs, cs = Math.cos(w), sn = Math.sin(w);
+  const al = sn / (2 * q), a0 = 1 + al;
+  return makeBiquad((1 - cs) / 2 / a0, (1 - cs) / a0, (1 - cs) / 2 / a0,
+                    (-2 * cs) / a0, (1 - al) / a0);
+}
+const Q = Math.SQRT1_2;                       // Butterworth de orden 2
+const BANDS = [[0.8, 3.0], [0.3, 2.0]];       // [0] palada (cubierta), [1] ciclo (chaleco)
+
+/* ---------------- estado ---------------- */
+const AXES = ["X", "Y", "Z"];
+let filters = null;                       // filters[banda][eje] = [hp, lp]
+let buf     = null;                       // buf[banda][eje] = Float32Array circular
+let bufPos  = 0, bufFilled = 0;
+const scratch  = new Float32Array(WIN_N);
+const windowed = new Float32Array(WIN_N);
+const hann     = new Float32Array(WIN_N);
+for (let i = 0; i < WIN_N; i++) hann[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (WIN_N - 1));
+
+let running = false;
+let startedAt = 0;
+let axis = -1;                 // eje elegido (-1 = aún calibrando)
+let mode = null;               // MODES.vest | MODES.deck
+let modeForced = false;        // true si el usuario lo fijó a mano
+let lastRecheck = 0;
+let source = "";               // "giro" | "acel"
+let fsRaw = 0;                 // frecuencia real de eventos del sensor
+let grav = null;               // media móvil del vector gravedad
+let recentSpm = [];
+let wakeLock = null;
+
+/* remuestreador */
+let lastT = null, lastV = [0, 0, 0], nextT = 0;
+
+function resetDsp() {
+  filters = BANDS.map(b => AXES.map(() => [highpass(b[0], FS, Q), lowpass(b[1], FS, Q)]));
+  buf = BANDS.map(() => AXES.map(() => new Float32Array(BUF_N)));
+  bufPos = 0; bufFilled = 0;
+  axis = -1; lastRecheck = 0; recentSpm = [];
+  lastT = null; nextT = 0; fsRaw = 0; grav = null;
+  if (!modeForced) mode = null;
+}
+
+/* ---------------- sensor ---------------- */
+function onMotion(e) {
+  const t = performance.now();
+
+  // La gravedad distingue chaleco (vertical) de cubierta (inclinado).
+  const a = e.accelerationIncludingGravity;
+  if (a && a.x !== null && a.y !== null && a.z !== null) {
+    if (!grav) grav = [a.x, a.y, a.z];
+    else for (let k = 0; k < 3; k++) grav[k] += ([a.x, a.y, a.z][k] - grav[k]) * 0.02;
+  }
+
+  let v;
+  const r = e.rotationRate;
+  if (r && (r.alpha !== null || r.beta !== null || r.gamma !== null)) {
+    source = "giro";
+    v = [r.alpha || 0, r.beta || 0, r.gamma || 0];
+  } else if (a) {
+    source = "acel";
+    v = [a.x || 0, a.y || 0, a.z || 0];
+  } else {
+    return;
+  }
+  push(t, v);
+}
+
+// Remuestreo a rejilla uniforme de FS Hz por interpolación lineal.
+function push(t, v) {
+  if (lastT === null) { lastT = t; lastV = v; nextT = t + DT; return; }
+  const dt = t - lastT;
+  if (dt <= 0) { lastV = v; return; }
+  fsRaw = fsRaw ? fsRaw * 0.9 + (1000 / dt) * 0.1 : 1000 / dt;
+
+  let guard = 0;
+  while (nextT <= t && guard < 60) {
+    const a = (nextT - lastT) / dt;
+    for (let k = 0; k < 3; k++) {
+      const raw = lastV[k] + (v[k] - lastV[k]) * a;
+      for (let b = 0; b < BANDS.length; b++) {
+        buf[b][k][bufPos] = filters[b][k][1](filters[b][k][0](raw));
+      }
+    }
+    bufPos = (bufPos + 1) % BUF_N;
+    if (bufFilled < BUF_N) bufFilled++;
+    nextT += DT;
+    guard++;
+  }
+  if (guard >= 60) nextT = t + DT;  // hueco grande: resincronizar
+  lastT = t; lastV = v;
+}
+
+/* ---------------- análisis ---------------- */
+// Copia las últimas n muestras (banda b, eje k) en orden temporal.
+function readWindow(b, k, n, out) {
+  const src = buf[b][k];
+  let idx = (bufPos - n + BUF_N) % BUF_N;
+  for (let i = 0; i < n; i++) { out[i] = src[idx]; idx++; if (idx === BUF_N) idx = 0; }
+}
+
+function variance(a, n) {
+  let m = 0; for (let i = 0; i < n; i++) m += a[i];
+  m /= n;
+  let s = 0; for (let i = 0; i < n; i++) { const d = a[i] - m; s += d * d; }
+  return s / n;
+}
+
+function goertzel(a, n, f) {
+  const coeff = 2 * Math.cos(2 * Math.PI * f / FS);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < n; i++) { const s0 = a[i] + coeff * s1 - s2; s2 = s1; s1 = s0; }
+  return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+}
+
+// Frecuencia dominante por barrido + interpolación parabólica.
+// conc = fracción de la potencia de banda concentrada alrededor del pico.
+function dominantFreq(a, n, m) {
+  const bins = Math.round((m.fMax - m.fMin) / m.step) + 1;
+  const p = new Float64Array(bins);
+  let total = 0, best = 0, bi = 0;
+  for (let i = 0; i < bins; i++) {
+    const v = goertzel(a, n, m.fMin + i * m.step);
+    p[i] = v; total += v;
+    if (v > best) { best = v; bi = i; }
+  }
+  if (total <= 0 || best <= 0) return { f: 0, conc: 0 };
+
+  // Si f/2 sigue dentro de la banda y es más fuerte, el pico era un armónico.
+  const hi = Math.round((((m.fMin + bi * m.step) / 2) - m.fMin) / m.step);
+  if (hi >= 1 && hi < bins && p[hi] > best) { bi = hi; best = p[hi]; }
+
+  let f = m.fMin + bi * m.step;
+  if (bi > 0 && bi < bins - 1) {
+    const d = p[bi - 1] - 2 * p[bi] + p[bi + 1];
+    if (d !== 0) {
+      const off = 0.5 * (p[bi - 1] - p[bi + 1]) / d;
+      if (Math.abs(off) <= 1) f += off * m.step;
+    }
+  }
+  // Potencia dentro de ±10 % de la frecuencia del pico frente al total.
+  const half = Math.max(1, Math.round((0.10 * f) / m.step));
+  let near = 0;
+  for (let i = Math.max(0, bi - half); i <= Math.min(bins - 1, bi + half); i++) near += p[i];
+  return { f, conc: near / total };
+}
+
+// Frecuencia por cruces por cero ascendentes con puerta de amplitud.
+function zeroCrossFreq(a, n) {
+  let rms = 0; for (let i = 0; i < n; i++) rms += a[i] * a[i];
+  rms = Math.sqrt(rms / n);
+  if (rms <= 0) return 0;
+  const gate = 0.5 * rms;
+  const marks = [];
+  let armed = false;
+  for (let i = 1; i < n; i++) {
+    if (a[i] < -gate) armed = true;
+    if (armed && a[i - 1] <= 0 && a[i] > 0) {
+      const frac = a[i - 1] === a[i] ? 0 : (0 - a[i - 1]) / (a[i] - a[i - 1]);
+      marks.push((i - 1 + frac) / FS);
+      armed = false;
+    }
+  }
+  if (marks.length < 3) return 0;
+  const gaps = [];
+  for (let i = 1; i < marks.length; i++) gaps.push(marks[i] - marks[i - 1]);
+  gaps.sort((x, y) => x - y);
+  const med = gaps[Math.floor(gaps.length / 2)];
+  return med > 0 ? 1 / med : 0;
+}
+
+// Elige el eje con más energía en la banda activa dentro de las últimas `sec` s.
+function pickAxis(sec) {
+  const n = Math.min(Math.round(sec * FS), bufFilled, WIN_N);
+  if (n < FS * 3) return { idx: -1, energies: [0, 0, 0] };
+  const energies = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    readWindow(mode.chain, k, n, scratch);
+    energies[k] = variance(scratch, n);
+  }
+  let idx = 0;
+  for (let k = 1; k < 3; k++) if (energies[k] > energies[idx]) idx = k;
+  return { idx, energies };
+}
+
+// Chaleco = móvil vertical: la gravedad cae sobre el eje largo de la pantalla.
+function detectMode() {
+  if (!grav) return MODES.deck;
+  const mag = Math.hypot(grav[0], grav[1], grav[2]);
+  if (mag < 5) return MODES.deck;
+  const tilt = Math.acos(Math.min(1, Math.abs(grav[1]) / mag)) * 180 / Math.PI;
+  return tilt < TILT_VEST ? MODES.vest : MODES.deck;
+}
+
+function median(arr) {
+  const s = arr.slice().sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+/* ---------------- ciclo de actualización ---------------- */
+function setQuality(cls, text) {
+  elQual.className = cls;
+  elQText.textContent = text;
+}
+
+function tick() {
+  updateChrono();
+  if (!running) return;
+
+  const elapsed = performance.now() - startedAt;
+
+  // Fase de calibración: elegir montaje y eje.
+  if (axis < 0) {
+    if (elapsed < CALIB_MS) {
+      const left = Math.max(1, Math.ceil((CALIB_MS - elapsed) / 1000));
+      setQuality("weak", "Calibrando… " + left + " s");
+      elDiag.textContent = diagText();
+      return;
+    }
+    if (!mode) mode = detectMode();
+    const r = pickAxis(CALIB_MS / 1000);
+    if (r.idx < 0) { setQuality("bad", "Sin datos del sensor"); return; }
+    axis = r.idx;
+    lastRecheck = elapsed;
+  }
+
+  // Reevaluación periódica del eje, con histéresis.
+  if (elapsed - lastRecheck > RECHECK_MS) {
+    lastRecheck = elapsed;
+    const r = pickAxis(6);
+    if (r.idx >= 0 && r.idx !== axis && r.energies[r.idx] > RECHECK_GAIN * r.energies[axis]) {
+      axis = r.idx;
+      recentSpm = [];
+    }
+  }
+
+  const n = Math.min(bufFilled, WIN_N);
+  if (n < WIN_N) {
+    setQuality("weak", "Llenando ventana… " + Math.ceil((WIN_N - n) / FS) + " s");
+    elDiag.textContent = diagText();
+    return;
+  }
+
+  readWindow(mode.chain, axis, n, scratch);
+  for (let i = 0; i < n; i++) windowed[i] = scratch[i] * hann[i];
+
+  const { f, conc } = dominantFreq(windowed, n, mode);
+  const fz = zeroCrossFreq(scratch, n);
+  const spm = f * 60 * mode.mult;
+
+  if (f <= 0 || conc < CONC_MIN || spm < SPM_MIN || spm > SPM_MAX) {
+    recentSpm = [];
+    elSpm.textContent = "--";
+    elSpm.classList.add("stale");
+    setQuality("bad", "Sin cadencia detectable");
+    elDiag.textContent = diagText(conc);
+    return;
+  }
+
+  recentSpm.push(spm);
+  if (recentSpm.length > MEDIAN_N) recentSpm.shift();
+  const shown = median(recentSpm);
+
+  const spread = recentSpm.length >= 3
+    ? Math.max.apply(null, recentSpm) - Math.min.apply(null, recentSpm) : 0;
+  const agree = fz > 0 ? Math.abs(fz - f) / f : 1;   // acuerdo espectro / cruces por cero
+
+  elSpm.textContent = String(Math.round(shown));
+  elSpm.classList.remove("stale");
+
+  if (conc >= CONC_GOOD && agree < 0.15 && spread < 6 && fsRaw >= 25) {
+    setQuality("good", "Señal buena");
+  } else {
+    setQuality("weak", "Señal débil — dato orientativo");
+  }
+  elDiag.textContent = diagText(conc, agree);
+}
+
+function diagText(conc, agree) {
+  const parts = [];
+  parts.push(mode ? mode.label + (modeForced ? "*" : "") : "montaje ?");
+  parts.push("eje " + (axis >= 0 ? AXES[axis] : "?"));
+  parts.push(source || "—");
+  parts.push(Math.round(fsRaw) + " Hz");
+  if (conc !== undefined) parts.push("pico " + Math.round(conc * 100) + "%");
+  if (agree !== undefined) parts.push("Δ" + Math.round(agree * 100) + "%");
+  return parts.join(" · ");
+}
+
+// Tocar la línea de diagnóstico fuerza el otro montaje (escape para el agua).
+elDiag.addEventListener("click", () => {
+  if (!running) return;
+  mode = (mode === MODES.vest) ? MODES.deck : MODES.vest;
+  modeForced = true;
+  recentSpm = [];
+  axis = -1;                     // reelegir eje en la banda nueva
+  startedAt = performance.now() - CALIB_MS;
+  elSpm.textContent = "--";
+  elSpm.classList.add("stale");
+  elDiag.textContent = diagText();
+});
+
+/* ---------------- cronómetro ---------------- */
+let chronoRunning = false, chronoBase = 0, chronoAcc = 0;
+
+function chronoMs() {
+  return chronoAcc + (chronoRunning ? performance.now() - chronoBase : 0);
+}
+function updateChrono() {
+  const total = Math.floor(chronoMs() / 1000);
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  elChrono.textContent = mm + ":" + ss;
+  elChrono.classList.toggle("paused", !chronoRunning);
+  btnChrono.innerHTML = chronoRunning ? "&#10073;&#10073;" : "&#9654;";
+}
+function chronoStart() {
+  if (chronoRunning) return;
+  chronoBase = performance.now();
+  chronoRunning = true;
+  updateChrono();
+}
+function chronoPause() {
+  if (!chronoRunning) return;
+  chronoAcc += performance.now() - chronoBase;
+  chronoRunning = false;
+  updateChrono();
+}
+btnChrono.addEventListener("click", () => chronoRunning ? chronoPause() : chronoStart());
+btnReset.addEventListener("click", () => {
+  chronoRunning = false; chronoAcc = 0; chronoBase = 0;
+  updateChrono();
+});
+
+/* ---------------- wake lock ---------------- */
+async function acquireWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch (e) { /* sin wake lock: la pantalla se apagará sola */ }
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => {
+  if (running && document.visibilityState === "visible" && !wakeLock) acquireWakeLock();
+});
+
+/* ---------------- arranque / parada ---------------- */
+async function requestSensorPermission() {
+  const DME = window.DeviceMotionEvent;
+  if (DME && typeof DME.requestPermission === "function") {
+    try { return (await DME.requestPermission()) === "granted"; }
+    catch (e) { return false; }
+  }
+  return true;
+}
+
+async function start() {
+  if (!window.DeviceMotionEvent) {
+    showWarn("Este navegador no expone DeviceMotionEvent. Usa Chrome en Android.");
+    return;
+  }
+  if (!window.isSecureContext) {
+    showWarn("Contexto no seguro: Chrome bloquea los sensores fuera de https:// o localhost. " +
+             "Sirve la página por https o desde localhost (ver README).");
+    return;
+  }
+  if (!(await requestSensorPermission())) { showWarn("Permiso de sensores denegado."); return; }
+
+  hideWarn();
+  resetDsp();
+  running = true;
+  startedAt = performance.now();
+  window.addEventListener("devicemotion", onMotion);
+  acquireWakeLock();
+
+  btnMain.textContent = "PARAR";
+  btnMain.classList.add("on");
+  elSpm.textContent = "--";
+  elSpm.classList.add("stale");
+  setQuality("weak", "Calibrando… " + (CALIB_MS / 1000) + " s");
+
+  if (chronoMs() === 0) chronoStart();
+
+  setTimeout(() => {
+    if (running && bufFilled === 0) {
+      showWarn("No llegan datos del sensor. Comprueba que el móvil tiene giroscopio " +
+               "y que la página se sirve por https:// o localhost.");
+    }
+  }, 3000);
+}
+
+function stop() {
+  running = false;
+  window.removeEventListener("devicemotion", onMotion);
+  releaseWakeLock();
+  chronoPause();
+  btnMain.textContent = "INICIAR";
+  btnMain.classList.remove("on");
+  elSpm.classList.add("stale");
+  setQuality("bad", "Detección parada");
+  elDiag.textContent = "";
+}
+
+btnMain.addEventListener("click", () => running ? stop() : start());
+
+function showWarn(msg) { elWarn.textContent = msg; elWarn.classList.add("show"); }
+function hideWarn() { elWarn.classList.remove("show"); }
+
+/* ---------------- init ---------------- */
+if (!window.isSecureContext) {
+  showWarn("Contexto no seguro: Chrome bloquea los sensores fuera de https:// o localhost. " +
+           "Sirve la página por https o desde localhost (ver README).");
+}
+updateChrono();
+setInterval(tick, UPDATE_MS);
+</script>
+</body>
+</html>
