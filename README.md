@@ -53,6 +53,23 @@ en el móvil sí es contexto seguro. Sirve con `python3 serve.py`.
 
 El cronómetro tiene sus propios botones (▶/⏸ y ↺) e ignora la detección.
 
+### Voz: la cadencia cantada cada 30 s
+
+Con el móvil en el bolsillo del chaleco no se ve la pantalla, así que **la voz
+es el único canal durante la sesión**. Cada 30 segundos dice la cadencia
+("ochenta y ocho"). Además:
+
+- Al pulsar INICIAR dice **"listo"** — confirma el arranque sin mirar, y de
+  paso desbloquea el audio (Android exige un gesto del usuario para poder
+  hablar después).
+- Si pierde la señal dice **"sin señal"** en vez de callarse: dentro del
+  chaleco, un silencio es indistinguible de una avería.
+- El botón 🔊 la silencia.
+
+Se oye por el altavoz desde el bolsillo en agua tranquila, pero con viento un
+auricular (uno solo, por seguridad) va mucho mejor. Sube el volumen de
+*multimedia* antes de salir — la voz sale por ese canal, no por el de llamada.
+
 ### Indicador de calidad
 
 | Estado | Significado |
@@ -81,7 +98,16 @@ DeviceMotionEvent.rotationRate
        b) frecuencia por cruces por cero (control cruzado → calidad)
   → spm = f × 60 × (2 si la dominante es el ciclo izquierda+derecha)
   → mediana de las 5 últimas estimaciones
+  → voz cada 30 s (Web Speech API, es-ES)
 ```
+
+**Rango medible:** 40–180 spm en cubierta, **55–180 spm en chaleco**. El límite
+inferior del chaleco no es arbitrario: como allí la frecuencia dominante es la
+mitad del ritmo, una cadencia de 50 spm cae en 0,42 Hz, justo encima del
+oleaje. Y en agua tranquila el oleaje es una sinusoide tan limpia que se cuela
+como cadencia perfectamente creíble — la primera versión llegó a cantar "42"
+veinte segundos después de dejar de palar. Antes que dar un número inventado,
+el prototipo dice `--`.
 
 Sin GPS, sin Bluetooth, sin login, sin base de datos, sin grabación, sin
 gráficas, sin navegación.
@@ -118,13 +144,18 @@ inyecta señal sintética (muestreo irregular, oleaje lento, ruido, armónicos)
 para los dos montajes:
 
 ```bash
-node test/simulacion.js
+node test/simulacion.js   # 26 casos: cadencia, montajes, ejes y falsos positivos
+node test/voz.js          # temporizado y contenido de las locuciones
 ```
 
-Cubre 50–140 spm en ambos montajes, los tres ejes, sensor lento (25 Hz),
-oleaje fuerte, barco parado (debe dar `--`) y cambios de ritmo a mitad de
-sesión. No sustituye a la prueba en el agua: valida el algoritmo, no la
-física real de la palada.
+`simulacion.js` cubre 50–140 spm en ambos montajes, los tres ejes, sensor lento
+(25 Hz), oleaje fuerte, barco a la deriva con oleaje limpio (debe dar `--`),
+cadencia fuera de rango y cambios de ritmo a mitad de sesión. `voz.js`
+comprueba que canta a los 30, 60 y 90 s, que el número es el correcto y que
+avisa al perder la señal.
+
+No sustituyen a la prueba en el agua: validan el algoritmo, no la física real
+de la palada.
 
 ---
 

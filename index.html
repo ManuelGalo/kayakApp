@@ -40,17 +40,18 @@
   /* --- cronómetro --- */
   .chrono-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
   #chrono{
-    font-size:clamp(38px,13vw,72px);
+    font-size:clamp(32px,11vw,64px);
     font-weight:600;letter-spacing:.02em;line-height:1;
   }
   #chrono.paused{color:var(--dim)}
   .chrono-btns{display:flex;gap:8px}
   .sbtn{
     background:var(--btn);color:var(--fg);border:0;border-radius:14px;
-    width:64px;height:52px;font-size:22px;line-height:1;
+    width:58px;height:52px;font-size:22px;line-height:1;
     display:flex;align-items:center;justify-content:center;
   }
   .sbtn:active{background:#2c2c2e}
+  .sbtn.off{color:#5a5a5a}
 
   /* --- cadencia --- */
   .main{
@@ -104,6 +105,7 @@
     <div class="chrono-btns">
       <button class="sbtn" id="btnChrono" aria-label="Arrancar o pausar cronómetro">&#9654;</button>
       <button class="sbtn" id="btnReset" aria-label="Resetear cronómetro">&#8635;</button>
+      <button class="sbtn" id="btnVoice" aria-label="Activar o silenciar la voz">&#128266;</button>
     </div>
   </div>
 
@@ -153,6 +155,11 @@ const RECHECK_GAIN= 1.6;         // histéresis: cuánto debe ganar el eje rival
 const CONC_MIN    = 0.55;        // concentración espectral mínima para dar número
 const CONC_GOOD   = 0.75;        // a partir de aquí, "señal buena"
 const TILT_VEST   = 35;          // grados desde la vertical para considerar chaleco
+const SPEAK_MS    = 30000;       // cada cuánto se canta la cadencia en voz alta
+/* Segunda red contra la cadencia fantasma: por debajo de este movimiento no
+   hay palada posible, sea cual sea la forma del espectro. El giroscopio da
+   grados/s (palando: decenas); el acelerómetro, m/s². */
+const RMS_MIN     = { giro: 2.5, acel: 0.25 };
 
 /* Los dos montajes que describen las especificaciones producen la MISMA forma
    de onda con distinto significado, así que no se pueden separar mirando solo
@@ -168,7 +175,7 @@ const TILT_VEST   = 35;          // grados desde la vertical para considerar cha
    que distingue físicamente ambos montajes. La línea de diagnóstico muestra el
    modo elegido y se puede tocar para forzar el otro si en el agua no cuadra. */
 const MODES = {
-  vest: { label: "chaleco", fMin: 0.35, fMax: 1.60, step: 0.01, mult: 2, chain: 1 },
+  vest: { label: "chaleco", fMin: 0.45, fMax: 1.60, step: 0.01, mult: 2, chain: 1 },
   deck: { label: "cubierta", fMin: 0.60, fMax: 3.20, step: 0.02, mult: 1, chain: 0 }
 };
 
@@ -182,6 +189,7 @@ const elWarn   = document.getElementById("warn");
 const btnMain  = document.getElementById("btnMain");
 const btnChrono= document.getElementById("btnChrono");
 const btnReset = document.getElementById("btnReset");
+const btnVoice = document.getElementById("btnVoice");
 
 /* ---------------- biquad (RBJ cookbook) ---------------- */
 function makeBiquad(b0, b1, b2, a1, a2) {
@@ -205,7 +213,11 @@ function lowpass(fc, fs, q) {
                     (-2 * cs) / a0, (1 - al) / a0);
 }
 const Q = Math.SQRT1_2;                       // Butterworth de orden 2
-const BANDS = [[0.8, 3.0], [0.3, 2.0]];       // [0] palada (cubierta), [1] ciclo (chaleco)
+/* [0] palada (cubierta), [1] ciclo (chaleco). El borde inferior de la banda del
+   chaleco tiene que quedar por encima del oleaje (0,15–0,35 Hz), que en agua
+   tranquila es una sinusoide MUY limpia y se cuela como cadencia falsa. El
+   precio es que en chaleco no se miden cadencias por debajo de ~54 spm. */
+const BANDS = [[0.8, 3.0], [0.4, 2.0]];
 
 /* ---------------- estado ---------------- */
 const AXES = ["X", "Y", "Z"];
@@ -228,6 +240,9 @@ let fsRaw = 0;                 // frecuencia real de eventos del sensor
 let grav = null;               // media móvil del vector gravedad
 let recentSpm = [];
 let wakeLock = null;
+let voiceOn = true;            // la voz es el único canal si el móvil va en el chaleco
+let voice = null;              // voz en español, si el sistema tiene alguna
+let lastSpoke = 0;
 
 /* remuestreador */
 let lastT = null, lastV = [0, 0, 0], nextT = 0;
@@ -448,12 +463,21 @@ function tick() {
   const fz = zeroCrossFreq(scratch, n);
   const spm = f * 60 * mode.mult;
 
-  if (f <= 0 || conc < CONC_MIN || spm < SPM_MIN || spm > SPM_MAX) {
+  let rms = 0;
+  for (let i = 0; i < n; i++) rms += scratch[i] * scratch[i];
+  rms = Math.sqrt(rms / n);
+  const moving = rms >= (RMS_MIN[source] || 0);
+
+  if (f <= 0 || !moving || conc < CONC_MIN || spm < SPM_MIN || spm > SPM_MAX) {
     recentSpm = [];
     elSpm.textContent = "--";
     elSpm.classList.add("stale");
     setQuality("bad", "Sin cadencia detectable");
     elDiag.textContent = diagText(conc);
+    if (elapsed - lastSpoke >= SPEAK_MS) {
+      lastSpoke = elapsed;
+      say("sin señal");   // el silencio, en el chaleco, es indistinguible de una avería
+    }
     return;
   }
 
@@ -467,6 +491,11 @@ function tick() {
 
   elSpm.textContent = String(Math.round(shown));
   elSpm.classList.remove("stale");
+
+  if (elapsed - lastSpoke >= SPEAK_MS) {
+    lastSpoke = elapsed;
+    say(String(Math.round(shown)));
+  }
 
   if (conc >= CONC_GOOD && agree < 0.15 && spread < 6 && fsRaw >= 25) {
     setQuality("good", "Señal buena");
@@ -498,6 +527,49 @@ elDiag.addEventListener("click", () => {
   elSpm.textContent = "--";
   elSpm.classList.add("stale");
   elDiag.textContent = diagText();
+});
+
+/* ---------------- voz ----------------
+   Con el móvil en el chaleco la pantalla no se ve, así que la voz es el único
+   canal de salida durante la sesión: canta la cadencia cada SPEAK_MS. Android
+   exige un gesto del usuario para desbloquear el audio, de ahí el aviso al
+   pulsar INICIAR. */
+const hasSpeech = typeof speechSynthesis !== "undefined";
+
+function pickVoice() {
+  if (!hasSpeech) return;
+  const vs = speechSynthesis.getVoices() || [];
+  voice = vs.find(v => v.lang && v.lang.toLowerCase().indexOf("es-es") === 0) ||
+          vs.find(v => v.lang && v.lang.toLowerCase().indexOf("es") === 0) || null;
+}
+if (hasSpeech) {
+  pickVoice();
+  speechSynthesis.addEventListener("voiceschanged", pickVoice);
+}
+
+function say(text) {
+  if (!voiceOn || !hasSpeech) return;
+  try {
+    // Sin cola: si algo sigue sonando, la cadencia nueva sustituye a la vieja.
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice;
+    u.lang = voice ? voice.lang : "es-ES";
+    u.rate = 1.05;
+    u.volume = 1;
+    speechSynthesis.speak(u);
+  } catch (e) { /* sin voz: queda la pantalla */ }
+}
+
+function setVoice(on) {
+  voiceOn = on;
+  btnVoice.innerHTML = on ? "&#128266;" : "&#128263;";
+  btnVoice.classList.toggle("off", !on);
+  if (!on && hasSpeech) { try { speechSynthesis.cancel(); } catch (e) {} }
+}
+btnVoice.addEventListener("click", () => {
+  setVoice(!voiceOn);
+  if (voiceOn) say("voz activada");
 });
 
 /* ---------------- cronómetro ---------------- */
@@ -582,6 +654,11 @@ async function start() {
   elSpm.classList.add("stale");
   setQuality("weak", "Calibrando… " + (CALIB_MS / 1000) + " s");
 
+  lastSpoke = 0;
+  // Este primer aviso, además de confirmar el arranque sin mirar la pantalla,
+  // desbloquea el audio: llega dentro del gesto del usuario que pulsó INICIAR.
+  say("listo");
+
   if (chronoMs() === 0) chronoStart();
 
   setTimeout(() => {
@@ -594,6 +671,7 @@ async function start() {
 
 function stop() {
   running = false;
+  say("parado");
   window.removeEventListener("devicemotion", onMotion);
   releaseWakeLock();
   chronoPause();
@@ -615,6 +693,7 @@ if (!window.isSecureContext) {
            "Sirve la página por https o desde localhost (ver README).");
 }
 updateChrono();
+setVoice(true);
 setInterval(tick, UPDATE_MS);
 </script>
 </body>
