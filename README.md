@@ -24,10 +24,16 @@ script. La primera vez Chrome avisa del certificado autofirmado:
 *Configuración avanzada → Acceder a…*. El portátil y el móvil tienen que
 estar en la misma red.
 
-**2. GitHub Pages**
+**2. GitHub Pages** — la más cómoda para salir al agua sin portátil
 
-Activa Pages sobre este repositorio y abre la URL en el móvil. Es la vía más
-cómoda si sales al agua sin portátil.
+*Settings → Pages → Source: Deploy from a branch → rama `claude/new-session-0kqvzh`,
+carpeta `/ (root)`.* En un minuto tienes
+`https://manuelgalo.github.io/kayakApp/` en el móvil.
+
+Ojo: **este repositorio es privado, y Pages sobre repos privados requiere
+GitHub Pro**. Con cuenta gratuita hay que hacer el repo público
+(*Settings → General → Danger Zone → Change visibility*). El prototipo no
+contiene nada sensible, así que es una opción razonable.
 
 **3. Cable USB + localhost**
 
